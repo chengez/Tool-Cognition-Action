@@ -1,0 +1,22 @@
+.vscode
+__pycache__
+logging
+outputs*
+
+outputs*
+temp/
+
+scripts/
+
+test.ipynb
+
+raw_data/math_arithmetic.json
+
+
+clusters
+# plot_cosim_scores
+data
+probe_results*
+probe_weights*
+
+_classify/
