@@ -167,7 +167,8 @@ python probe.py \
 3. Trains a linear probe (single-layer MLP / logistic regression via `BCEWithLogitsLoss`)
 4. Logs training and testing performance, and saves probe weights in `.npz` format.
     > These saved probe weights can be used to study the relationship between the necessity and action probes, as done in Section 5.3 of our paper.
-
+    
+    > The probe weights used in our paper are stored under `probe_weights_action` and `probe_weights_necessity`.
 
 
 
