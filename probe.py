@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
-"""
+"""probe.py
+
 Train linear probes to classify either:
 - "necessity" (necessary vs unnecessary, regardless of called status)
 - "action" (called vs not called, regardless of necessity)
 
-Uses a 7:3 train-test split on all combined data per layer.
-Then apply trained probes to test set and plot results.
+This script expects cluster tensors stored under:
+    clusters/<model>/<data_name>/{necessary|unnecessary}_{called|Notcalled}/
+
+and filenames like:
+    {necessary|unnecessary}_{called|Notcalled}_L<layer>_K-<pos>.pt
+
+Uses a configurable train/test split on all combined data per layer.
 Saves learned weight vectors separately.
 """
 
@@ -40,6 +46,47 @@ def compute_f1(y_true: np.ndarray, y_pred: np.ndarray) -> float:
         return 0.0
     
     return 2 * (precision * recall) / (precision + recall)
+
+
+def compute_precision_recall_f1(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    positive_label: int
+) -> Tuple[float, float, float]:
+    """Compute precision/recall/F1 for a specified positive label."""
+    tp = np.sum((y_true == positive_label) & (y_pred == positive_label))
+    fp = np.sum((y_true != positive_label) & (y_pred == positive_label))
+    fn = np.sum((y_true == positive_label) & (y_pred != positive_label))
+
+    if tp + fp == 0:
+        precision = 0.0
+    else:
+        precision = tp / (tp + fp)
+
+    if tp + fn == 0:
+        recall = 0.0
+    else:
+        recall = tp / (tp + fn)
+
+    if precision + recall == 0:
+        f1 = 0.0
+    else:
+        f1 = 2 * (precision * recall) / (precision + recall)
+
+    return precision, recall, f1
+
+
+def compute_mcc(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Compute Matthews correlation coefficient for binary labels."""
+    tp = np.sum((y_true == 1) & (y_pred == 1))
+    tn = np.sum((y_true == 0) & (y_pred == 0))
+    fp = np.sum((y_true == 0) & (y_pred == 1))
+    fn = np.sum((y_true == 1) & (y_pred == 0))
+
+    denom = (tp + fp) * (tp + fn) * (tn + fp) * (tn + fn)
+    if denom == 0:
+        return 0.0
+    return (tp * tn - fp * fn) / np.sqrt(denom)
 
 
 class SimpleLinearProbe(torch.nn.Module):
@@ -171,7 +218,8 @@ def discover_k_positions(cluster_dir: str, model_basename: str, data_name: str) 
     """
     Discover all K positions available in the cluster directory.
     """
-    base_path = os.path.join("clusters", model_basename, data_name, "necessary_called")
+    # We inspect one canonical cluster directory (necessary_called) to list K positions.
+    base_path = os.path.join(cluster_dir, model_basename, data_name, "necessary_called")
     if not os.path.exists(base_path):
         raise FileNotFoundError(f"Directory not found: {base_path}")
 
@@ -198,7 +246,7 @@ def discover_layers(cluster_dir: str, model_basename: str, data_name: str, k_pos
     """
     Discover all layers available for a given K position.
     """
-    base_path = os.path.join("clusters", model_basename, data_name, "necessary_called")
+    base_path = os.path.join(cluster_dir, model_basename, data_name, "necessary_called")
     layers = set()
 
     for filename in os.listdir(base_path):
@@ -260,8 +308,8 @@ def get_classification_data(
               and necessary_notcalled (label 0, hard to classify)
 
     Args:
-        balance_clusters: If True, balance the 4 clusters by sampling
-                         equal amounts from each (sample size = min cluster size)
+        balance_clusters: Deprecated here. Balancing is now applied after
+                         the train/test split (see train_probes_for_position).
         seed: Random seed for balancing operations
 
     Returns:
@@ -297,16 +345,6 @@ def get_classification_data(
         n_neg_called_orig = len(neg_called)
         n_neg_notcalled_orig = len(neg_notcalled)
         
-        if balance_clusters:
-            # Balance 4 clusters by sampling equal amounts
-            np.random.seed(seed)
-            n_samples = [len(pos_called), len(pos_notcalled), len(neg_called), len(neg_notcalled)]
-            min_samples = min(n_samples)
-            
-            pos_called = pos_called[np.random.choice(len(pos_called), min_samples, replace=False)]
-            pos_notcalled = pos_notcalled[np.random.choice(len(pos_notcalled), min_samples, replace=False)]
-            neg_called = neg_called[np.random.choice(len(neg_called), min_samples, replace=False)]
-            neg_notcalled = neg_notcalled[np.random.choice(len(neg_notcalled), min_samples, replace=False)]
         
         # Combine samples
         pos_samples = torch.cat([pos_called, pos_notcalled], dim=0)
@@ -355,16 +393,6 @@ def get_classification_data(
         n_neg_necessary_orig = len(neg_necessary)
         n_neg_unnecessary_orig = len(neg_unnecessary)
         
-        if balance_clusters:
-            # Balance 4 clusters by sampling equal amounts
-            np.random.seed(seed)
-            n_samples = [len(pos_necessary), len(pos_unnecessary), len(neg_necessary), len(neg_unnecessary)]
-            min_samples = min(n_samples)
-            
-            pos_necessary = pos_necessary[np.random.choice(len(pos_necessary), min_samples, replace=False)]
-            pos_unnecessary = pos_unnecessary[np.random.choice(len(pos_unnecessary), min_samples, replace=False)]
-            neg_necessary = neg_necessary[np.random.choice(len(neg_necessary), min_samples, replace=False)]
-            neg_unnecessary = neg_unnecessary[np.random.choice(len(neg_unnecessary), min_samples, replace=False)]
         
         # Combine samples
         pos_samples = torch.cat([pos_necessary, pos_unnecessary], dim=0)
@@ -442,7 +470,8 @@ def train_probes_for_position(
     log_output_dir: str = None,
     balance_clusters: bool = False,
     use_pos_weight: bool = False,
-    seed: int = 42
+    seed: int = 42,
+    train_ratio: float = 0.7
 ) -> Tuple[Dict[int, Tuple[SimpleLinearProbe, float, Tuple[np.ndarray, np.ndarray]]], Dict]:
     """
     Train linear probes for each layer at the given K position.
@@ -450,13 +479,14 @@ def train_probes_for_position(
     - "necessity": necessary vs unnecessary
     - "action": called vs not_called
 
-    Uses 7:3 train-test split on all data.
+    Uses configurable train-test split on all data.
 
     Args:
         balance_clusters: If True, balance the 4 clusters by sampling equal amounts
         use_pos_weight: If True (and balance_clusters is False), use
                         BCEWithLogitsLoss pos_weight = n_neg / n_pos on train split.
         seed: Random seed for reproducibility
+        train_ratio: Fraction of data to use for training (default: 0.7 for 70% train / 30% test)
 
     Returns:
         Tuple of (probes_dict, eval_results)
@@ -468,7 +498,7 @@ def train_probes_for_position(
 
     for layer in tqdm(layers, desc=f"Training probes for {k_position}"):
         try:
-            # Load data based on classification type (now includes misaligned mask)
+            # Load data based on classification type (includes misaligned mask)
             X_all, y_all, misaligned_all, cluster_info = get_classification_data(
                 model_basename, data_name, layer, k_position, classification_type,
                 balance_clusters=balance_clusters, seed=seed
@@ -488,15 +518,33 @@ def train_probes_for_position(
                 print(f"    Not Called Necessary: {cluster_info['n_neg_called_or_necessary']:6d}")
                 print(f"    Not Called Unnecessary: {cluster_info['n_neg_notcalled_or_unnecessary']:6d}")
 
-            # Perform 7:3 train-test split
+            # Perform train-test split with specified ratio
             n_samples = len(X_all)
-            train_size = int(0.7 * n_samples)
+            train_size = int(train_ratio * n_samples)
 
             # Random indices
             np.random.seed(seed)  # For reproducibility
             indices = np.random.permutation(n_samples)
             train_indices = indices[:train_size]
             test_indices = indices[train_size:]
+
+            # Balance only between positive and negative in the training split (if requested).
+            if balance_clusters:
+                train_pos_idx = train_indices[y_all[train_indices] == 1]
+                train_neg_idx = train_indices[y_all[train_indices] == 0]
+
+                if len(train_pos_idx) == 0 or len(train_neg_idx) == 0:
+                    raise ValueError(f"Cannot balance training set for layer {layer}: one class is empty")
+
+                min_count = min(len(train_pos_idx), len(train_neg_idx))
+                train_pos_keep = np.random.choice(train_pos_idx, min_count, replace=False)
+                train_neg_keep = np.random.choice(train_neg_idx, min_count, replace=False)
+                train_keep = np.concatenate([train_pos_keep, train_neg_keep])
+
+                dropped_train = np.setdiff1d(train_indices, train_keep, assume_unique=False)
+                # Test set = original test + dropped training samples
+                test_indices = np.concatenate([test_indices, dropped_train])
+                train_indices = train_keep
 
             X_train = X_all[train_indices]
             y_train = y_all[train_indices]
@@ -529,6 +577,7 @@ def train_probes_for_position(
             preds = (probs > 0.5).astype(int)
             test_acc = compute_accuracy(y_test, preds)
             test_f1 = compute_f1(y_test, preds)
+            test_mcc = compute_mcc(y_test, preds)
             
             # Compute per-class accuracies and F1 scores
             mask_class0 = y_test == 0
@@ -536,9 +585,16 @@ def train_probes_for_position(
             
             class0_acc = np.mean(preds[mask_class0] == y_test[mask_class0]) if np.any(mask_class0) else np.nan
             class1_acc = np.mean(preds[mask_class1] == y_test[mask_class1]) if np.any(mask_class1) else np.nan
-            
-            class0_f1 = compute_f1(y_test[mask_class0], preds[mask_class0]) if np.any(mask_class0) else np.nan
-            class1_f1 = compute_f1(y_test[mask_class1], preds[mask_class1]) if np.any(mask_class1) else np.nan
+
+            if np.any(mask_class0):
+                class0_precision, class0_recall, class0_f1 = compute_precision_recall_f1(y_test, preds, positive_label=0)
+            else:
+                class0_precision, class0_recall, class0_f1 = np.nan, np.nan, np.nan
+
+            if np.any(mask_class1):
+                class1_precision, class1_recall, class1_f1 = compute_precision_recall_f1(y_test, preds, positive_label=1)
+            else:
+                class1_precision, class1_recall, class1_f1 = np.nan, np.nan, np.nan
             
             # Compute misaligned metrics
             mask_misaligned = misaligned_test == 1
@@ -556,13 +612,22 @@ def train_probes_for_position(
                 'train_acc': train_acc,
                 'test_acc': test_acc,
                 'test_f1': test_f1,
+                'test_mcc': test_mcc,
                 'class0_acc': class0_acc,
                 'class1_acc': class1_acc,
                 'class0_f1': class0_f1,
                 'class1_f1': class1_f1,
+                'class0_precision': class0_precision,
+                'class0_recall': class0_recall,
+                'class1_precision': class1_precision,
+                'class1_recall': class1_recall,
                 'misaligned_acc': misaligned_acc,
                 'misaligned_f1': misaligned_f1,
                 'misaligned_count': misaligned_count,
+                'train_pos': int(np.sum(y_train == 1)),
+                'train_neg': int(np.sum(y_train == 0)),
+                'test_pos': int(np.sum(y_test == 1)),
+                'test_neg': int(np.sum(y_test == 0)),
                 'test_size': len(X_test)
             })
 
@@ -603,7 +668,22 @@ def train_probes_for_position(
             f.write("TEST PERFORMANCE - OVERALL (30% of data)\n")
             f.write("-" * 90 + "\n")
             for result in sorted(training_results, key=lambda x: x['layer']):
-                f.write(f"Layer {result['layer']}: Accuracy={result['test_acc']:.4f}, F1={result['test_f1']:.4f}\n")
+                f.write(
+                    f"Layer {result['layer']}: Accuracy={result['test_acc']:.4f}, "
+                    f"F1={result['test_f1']:.4f}, MCC={result['test_mcc']:.4f}\n"
+                )
+
+            f.write("\n")
+
+            # Train/test class counts
+            f.write("CLASS COUNTS (TRAIN/TEST)\n")
+            f.write("-" * 90 + "\n")
+            for result in sorted(training_results, key=lambda x: x['layer']):
+                f.write(
+                    f"Layer {result['layer']}: "
+                    f"Train(pos={result['train_pos']}, neg={result['train_neg']}), "
+                    f"Test(pos={result['test_pos']}, neg={result['test_neg']})\n"
+                )
             
             f.write("\n")
             
@@ -613,9 +693,19 @@ def train_probes_for_position(
             for result in sorted(training_results, key=lambda x: x['layer']):
                 f.write(f"Layer {result['layer']}:\n")
                 if not np.isnan(result['class0_acc']):
-                    f.write(f"  Class 0: Accuracy={result['class0_acc']:.4f}, F1={result['class0_f1']:.4f}\n")
+                    f.write(
+                        f"  Class 0: Accuracy={result['class0_acc']:.4f}, "
+                        f"Precision={result['class0_precision']:.4f}, "
+                        f"Recall={result['class0_recall']:.4f}, "
+                        f"F1={result['class0_f1']:.4f}\n"
+                    )
                 if not np.isnan(result['class1_acc']):
-                    f.write(f"  Class 1: Accuracy={result['class1_acc']:.4f}, F1={result['class1_f1']:.4f}\n")
+                    f.write(
+                        f"  Class 1: Accuracy={result['class1_acc']:.4f}, "
+                        f"Precision={result['class1_precision']:.4f}, "
+                        f"Recall={result['class1_recall']:.4f}, "
+                        f"F1={result['class1_f1']:.4f}\n"
+                    )
             
             f.write("\n")
             
@@ -697,7 +787,6 @@ def evaluate_on_test_set(
     return np.array(test_accs), np.array(class0_accs), np.array(class1_accs), np.array(proportions), probs_dict
 
 
-
 def main():
     parser = argparse.ArgumentParser(
         description="Train linear probes for classification with train-test split and weight saving"
@@ -708,7 +797,7 @@ def main():
     )
     parser.add_argument(
         "--data_name", type=str, required=False, default="math_arithmetic_union",
-        help="Data name (e.g., 'truthfulqa' or 'math_arithmetic_union')"
+        help="Data name (e.g., 'MetaTool' or 'math_arithmetic_union')"
     )
     parser.add_argument(
         "--classification_type", type=str, choices=["necessity", "action"],
@@ -730,16 +819,26 @@ def main():
         "--seed", type=int, default=42,
         help="Random seed for reproducibility (default: 42)"
     )
+    parser.add_argument(
+        "--train_ratio", type=float, default=0.7,
+        help="Train/test split ratio (default: 0.7 for 70% train / 30% test)"
+    )
+    parser.add_argument(
+        "--save_plots", action="store_true",
+        help="If set, plot the figures and save the plots as PDF files"
+    )
     args = parser.parse_args()
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     # Determine output directories based on classification type
+    plots_output_dir = f"probe_results_{args.classification_type}"
     weights_output_dir = f"probe_weights_{args.classification_type}"
     logs_output_dir = f"probe_results_{args.classification_type}_log"
     
     # Add seed suffix to directories if balancing is enabled
     if args.balance_clusters:
+        plots_output_dir = f"probe_results_{args.classification_type}_balanced_seed{args.seed}"
         weights_output_dir = f"probe_weights_{args.classification_type}_balanced_seed{args.seed}"
         logs_output_dir = f"probe_results_{args.classification_type}_balanced_seed{args.seed}_log"
 
@@ -748,8 +847,10 @@ def main():
     print(f"Classification type: {args.classification_type}")
     print(f"Balance clusters: {args.balance_clusters}")
     print(f"Use pos_weight: {args.use_pos_weight}")
+    print(f"Train/test split ratio: {args.train_ratio:.1%}")
     print(f"Seed: {args.seed}")
     print(f"Device: {device}")
+    print(f"Plots output: {plots_output_dir}")
     print(f"Weights output: {weights_output_dir}")
     print(f"Logs output: {logs_output_dir}")
     print()
@@ -771,8 +872,8 @@ def main():
 
         print(f"Discovered layers: {layers}")
 
-        # Train probes with 7:3 train-test split
-        print(f"Training probes on 70% of data (7:3 train-test split)...")
+        # Train probes with specified train-test split
+        print(f"Training probes on {args.train_ratio:.0%} of data ({args.train_ratio:.0%} train / {1-args.train_ratio:.0%} test split)...")
         probes, training_results = train_probes_for_position(
             args.model, args.data_name, k_position, layers,
             args.classification_type,
@@ -781,13 +882,14 @@ def main():
             log_output_dir=logs_output_dir,
             balance_clusters=args.balance_clusters,
             use_pos_weight=args.use_pos_weight,
-            seed=args.seed
+            seed=args.seed,
+            train_ratio=args.train_ratio
         )
 
         print(f"✓ Trained {len(probes)} probes")
 
         # Evaluate on test sets
-        print("Evaluating on test sets (30% of data)...")
+        print(f"Evaluating on test sets ({1-args.train_ratio:.0%} of data)...")
         test_accs, class0_accs, class1_accs, test_props, test_probs = evaluate_on_test_set(args.model, layers, probes)
 
         valid_count = np.sum(~np.isnan(test_accs))

@@ -1,23 +1,21 @@
 # Model-Adaptive Tool Necessity Reveals the Knowing-Doing Gap in LLM Tool Use
 
 This repository contains the code and data used in the paper:
-📄 [_Model-Adaptive Tool Necessity Reveals the Knowing-Doing Gap in LLM Tool Use_](https://github.com/chengez/Tool-Cognition-Action)
-
-![Overview](./readme_img/overview.png)
-
-
-## 📖 Overview
-
+📄 [_Model-Adaptive Tool Necessity Reveals the Knowing-Doing Gap in LLM Tool Use_](https://github.com/chengez/Tool-Cognition-Action).
 
 We study two linked questions in LLM-based agents:
 (1) when should a model call external tools vs. answer directly, and
 (2) when a model’s tool-use decisions deviate from the *model-adaptive* ground truth of when tools are actually needed, what drives that mismatch?
 
-**Main contributions:**
+![Overview](./readme_img/overview.png)
+
+
+## 📖 Main Contributions and Findings:
+
 
 1. **Model-Adaptive Tool Necessity**: We introduce the definition of tool necessity grounded in each model's *empirical performance*, rather than static, model-agnostic necessity annotations. A tool is necessary for a specific model if that model cannot reliably solve a query consistently without it. 
 
-2. **Substantial Necessity-Action Mismatch**: Across four models (Llama-3.1-8B, Llama-3.2-3B, Qwen3-8B, Qwen3-4B) and two domains:
+2. **Substantial Necessity-Action Mismatch**: Across four models (Llama-3.1-8B-Instruct, Llama-3.2-3B-Instruct, Qwen3-8B, Qwen3-4B) and two domains:
    - **Arithmetic**: 26.5–54.0% mismatch between when tools are truly needed and when models actually call them
    - **Factual QA (TruthfulQA)**: 30.8–41.8% mismatch
 
@@ -67,7 +65,6 @@ python format_input.py \
 - `--raw_data`: JSON file containing `{"id": str, "history": list, "function": list}`
     - `history` is a list of chat messages (OpenAI-style `role`/`content`).
     - `function` is the list of available tools/function specs for that sample.
-        If no tools are available, use an empty list `[]` (or omit the field).
 - `--model`: Model identifier (mapped to a handler in `Inference/inference/model_map.py`)
 
 **Outputs**:
