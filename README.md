@@ -1,7 +1,7 @@
 # Model-Adaptive Tool Necessity Reveals the Knowing-Doing Gap in LLM Tool Use
 
 This repository contains the code and data used in the paper:
-📄 [_Model-Adaptive Tool Necessity Reveals the Knowing-Doing Gap in LLM Tool Use_](https://github.com/chengez/Tool-Cognition-Action).
+📄 [_Model-Adaptive Tool Necessity Reveals the Knowing-Doing Gap in LLM Tool Use_](https://arxiv.org/abs/2605.14038).
 
 We study two linked questions in LLM-based agents:
 (1) when should a model call external tools vs. answer directly, and
@@ -176,11 +176,14 @@ python probe.py \
 ## 📚 Citation
 
 ```bibtex
-@article{cheng2026tool_cognition_action,
-  title={Model-Adaptive Tool Necessity Reveals the Knowing-Doing Gap in LLM Tool Use},
-  author={Cheng, Yize and Fan, Chenrui and JafariRaviz, Mahdi and Rezaei, Keivan and Feizi, Soheil},
-  journal={arXiv preprint arXiv:2505.xxxx},
-  year={2026}
+@misc{cheng2026modeladaptivetoolnecessityreveals,
+      title={Model-Adaptive Tool Necessity Reveals the Knowing-Doing Gap in LLM Tool Use}, 
+      author={Yize Cheng and Chenrui Fan and Mahdi JafariRaviz and Keivan Rezaei and Soheil Feiz},
+      year={2026},
+      eprint={2605.14038},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2605.14038}, 
 }
 ```
 
